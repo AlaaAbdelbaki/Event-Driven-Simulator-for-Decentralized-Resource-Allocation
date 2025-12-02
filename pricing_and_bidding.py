@@ -3,6 +3,9 @@ from collections import defaultdict
 from math import sqrt
 
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from numpy.typing import NDArray
 
 
 class Player:
@@ -26,12 +29,12 @@ class Player:
         # Track current bid state
         self.current_bid = min_bid
 
-    def calculate_best_response(self, s_minus_i: float, unit_price: float) -> float:
+    def calculate_best_response(self, aggregate_bid: float, unit_price: float) -> float:
         """
         Calculates the optimal bid z_i given the state of the network.
 
         Args:
-            s_minus_i: The sum of OTHER players' bids + delta (s_{-i})
+            aggregate_bid: The sum of OTHER players' bids + delta (s_{-i})
             unit_price: The current price of the resource (lambda)
 
         Returns:
@@ -47,20 +50,20 @@ class Player:
         if self.alpha == 0:
             # Efficiency Maximization Case
             # Formula: sqrt(a * s / lambda) - s
-            term = (self.valuation * s_minus_i) / unit_price
-            z_unconstrained = sqrt(term) - s_minus_i
+            term = (self.valuation * aggregate_bid) / unit_price
+            z_unconstrained = sqrt(term) - aggregate_bid
 
         elif self.alpha == 1:
             # Proportional Fairness Case
             # Formula: (-s + sqrt(s^2 + 4 * a * s / lambda)) / 2
-            term_inside_sqrt = (s_minus_i ** 2) + \
-                (4 * self.valuation * s_minus_i / unit_price)
-            z_unconstrained = (-s_minus_i + sqrt(term_inside_sqrt)) / 2
+            term_inside_sqrt = (aggregate_bid ** 2) + \
+                (4 * self.valuation * aggregate_bid / unit_price)
+            z_unconstrained = (-aggregate_bid + sqrt(term_inside_sqrt)) / 2
 
         elif self.alpha == 2:
             # Minimum Potential Delay Fairness [cite: 140]
             # Formula: sqrt(a * s / lambda)   (Note: Paper lists this as case iii)
-            term = (self.valuation * s_minus_i) / unit_price
+            term = (self.valuation * aggregate_bid) / unit_price
             z_unconstrained = sqrt(term)
 
         else:
@@ -255,7 +258,7 @@ class Simulator:
         new_valuation = random.uniform(1, 10)  # 'a_i' parameter
 
         p = Player(f"P{self.player_counter}", new_budget,
-                   alpha=1, valuation=new_valuation)
+                   alpha=2, valuation=new_valuation)
         self.active_players.append(p)
 
         # Schedule this player's departure
@@ -266,7 +269,7 @@ class Simulator:
         print(
             f"[Time {self.current_time:.2f}] Arrival: {p.name}. Total Players: {len(self.active_players)}")
 
-    def _handle_departure(self, player):
+    def _handle_departure(self, player: Player):
         if player in self.active_players:
             self.active_players.remove(player)
             del self.departures[player]
@@ -301,6 +304,9 @@ class Simulator:
 
     def plot_results(self):
         """Generate comprehensive plots of simulation results."""
+        # Type annotations for local variables
+        fig: Figure
+
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         fig.suptitle('Kelly Mechanism Simulation Results',
                      fontsize=16, fontweight='bold')
@@ -349,11 +355,14 @@ class Simulator:
 
         plt.tight_layout()
         plt.savefig('simulation_results.png', dpi=300, bbox_inches='tight')
-        print("\n📊 Plots saved to 'simulation_results.png'")
+        print("\nPlots saved to 'simulation_results.png'")
         plt.show()
 
 
-if __name__ == "__main__":
+def run_simulation():
+    """
+    Sets up and runs the Kelly mechanism simulation with default parameters.
+    """
     # --- Configuration ---
     ARRIVAL_RATE = 2.0     # lambda (Poisson process)
     DEPARTURE_RATE = 0.5   # mu (Service rate)
@@ -362,11 +371,9 @@ if __name__ == "__main__":
     DURATION = 20.0        # Seconds to simulate
 
     # 1. Initialize Resource
-    # Uses the Resource class defined in previous steps
     resource = Resource(capacity=RESOURCE_CAPACITY, price=PRICE, delta=0.1)
 
     # 2. Initialize Simulator
-    # Uses the Player class logic internally during arrivals
     sim = Simulator(resource, arrival_rate=ARRIVAL_RATE,
                     departure_rate=DEPARTURE_RATE)
 
@@ -378,7 +385,6 @@ if __name__ == "__main__":
     print(f"Active Players: {len(sim.active_players)}")
 
     # Calculate final allocations
-    # Create dictionary mapping Player -> Bid Amount
     final_bids = {p: p.current_bid for p in sim.active_players}
     allocations = resource.allocate(final_bids)
 
@@ -392,3 +398,7 @@ if __name__ == "__main__":
     # 5. Generate Plots
     print("\n--- Generating Plots ---")
     sim.plot_results()
+
+
+if __name__ == "__main__":
+    run_simulation()
