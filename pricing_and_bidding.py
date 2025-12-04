@@ -483,7 +483,7 @@ class Simulator:
         plt.show()
 
 
-def run_simulation(convergence_method='sbrd', allow_departures=True):
+def run_simulation(convergence_method='sbrd', allow_departures=False):
     """
     Sets up and runs the Kelly mechanism simulation with default parameters.
 
@@ -539,9 +539,12 @@ def run_simulation(convergence_method='sbrd', allow_departures=True):
 if __name__ == "__main__":
     import random
 
+    allow_departures: bool = False
+
     # Run with SBRD and departures enabled
     random.seed(42)
-    run_simulation(convergence_method='sbrd', allow_departures=True)
+    run_simulation(convergence_method='sbrd',
+                   allow_departures=allow_departures)
 
     print("\n" + "="*60)
     print("Now running with Gradient Descent and NO departures...")
@@ -549,4 +552,5 @@ if __name__ == "__main__":
 
     # Run with Gradient Descent and departures disabled
     random.seed(42)
-    run_simulation(convergence_method='gradient', allow_departures=False)
+    run_simulation(convergence_method='gradient',
+                   allow_departures=allow_departures)
