@@ -141,16 +141,20 @@ class Resource:
 
 
 class Simulator:
-    def __init__(self, resource, arrival_rate, departure_rate):
+    def __init__(self, resource, arrival_rate, departure_rate, convergence_method='sbrd', allow_departures=True):
         """
         Args:
             resource: The Resource object.
             arrival_rate (A): Lambda for Poisson arrivals.
             departure_rate (B): Mu for exponential service times.
+            convergence_method: 'sbrd' for Synchronous Best Response or 'gradient' for Gradient Descent
+            allow_departures: If True, players can leave; if False, players stay forever
         """
         self.resource: Resource = resource
         self.arrival_rate: float = arrival_rate
         self.departure_rate: float = departure_rate
+        self.convergence_method: str = convergence_method
+        self.allow_departures: bool = allow_departures
 
         self.current_time: float = 0.0
         self.active_players: list[Player] = []
@@ -208,21 +212,133 @@ class Simulator:
 
             # 4. Check Convergence
             if diff < tolerance:
-                # print(f"  -> Converged in {i+1} iterations.")
+                print(f"  -> Converged in {i+1} iterations.")
                 break
+
+    def run_gradient_descent(self, max_iter=100, tolerance=1e-5, learning_rate=0.1):
+        """
+        Executes gradient descent to find optimal bids by maximizing player utilities.
+        Players update bids in the direction of the utility gradient.
+
+        Args:
+            max_iter: Maximum number of iterations
+            tolerance: Convergence tolerance
+            learning_rate: Step size for gradient updates
+        """
+        if not self.active_players:
+            return
+
+        for iteration in range(max_iter):
+            # Calculate current allocations
+            current_bids = {p: p.current_bid for p in self.active_players}
+            allocations = self.resource.allocate(current_bids)
+
+            new_bids = []
+            max_change = 0.0
+
+            for player in self.active_players:
+                # Compute gradient of utility with respect to bid
+                gradient = self._compute_utility_gradient(player, allocations)
+
+                # Update bid using gradient ascent (maximize utility)
+                new_bid = player.current_bid + learning_rate * gradient
+
+                # Apply constraints
+                max_affordable = player.budget / self.resource.price
+                new_bid = max(player.min_bid, min(new_bid, max_affordable))
+
+                new_bids.append(new_bid)
+                max_change = max(max_change, abs(new_bid - player.current_bid))
+
+            # Update all bids
+            for player, bid in zip(self.active_players, new_bids):
+                player.current_bid = bid
+
+            # Check convergence
+            if max_change < tolerance:
+                # print(f"  -> Gradient descent converged in {iteration+1} iterations.")
+                break
+
+    def _compute_utility_gradient(self, player: Player, allocations: dict) -> float:
+        """
+        Computes the gradient of player's utility with respect to their bid.
+        Utility = V(x_i) - lambda * z_i, where x_i is the allocation.
+
+        For alpha-fair utilities:
+        - alpha=0: U(x) = a*x, gradient depends on dx/dz
+        - alpha=1: U(x) = a*log(x), gradient = a/x * dx/dz
+        - alpha=2: U(x) = a*x^(-1)/(-1), gradient uses chain rule
+
+        Args:
+            player: The player whose gradient to compute
+            allocations: Current allocation dictionary
+
+        Returns:
+            Gradient value (derivative of utility w.r.t. bid)
+        """
+        # Get current allocation
+        x_i = allocations.get(player, 0.0)
+        z_i = player.current_bid
+
+        # Compute total bids
+        total_bids = sum(
+            p.current_bid for p in self.active_players) + self.resource.delta
+
+        # Derivative of allocation w.r.t. bid: dx_i/dz_i
+        # x_i = z_i / S, where S = sum(z_j) + delta
+        # dx_i/dz_i = (S - z_i) / S^2 = (1/S) - (z_i/S^2)
+        if total_bids > 0:
+            dx_dz = (1.0 / total_bids) - (z_i / (total_bids ** 2))
+        else:
+            dx_dz = 0.0
+
+        # Compute utility gradient based on alpha
+        if x_i <= 1e-12:  # Avoid division by zero
+            x_i = 1e-12
+
+        if player.alpha == 0:
+            # U = a*x - lambda*z
+            # dU/dz = a * dx/dz - lambda
+            utility_grad = player.valuation * dx_dz - self.resource.price
+
+        elif player.alpha == 1:
+            # U = a*log(x) - lambda*z
+            # dU/dz = a/x * dx/dz - lambda
+            utility_grad = (player.valuation / x_i) * \
+                dx_dz - self.resource.price
+
+        elif player.alpha == 2:
+            # U = a*x^(-1)/(-1) - lambda*z = -a/x - lambda*z
+            # dU/dz = a/x^2 * dx/dz - lambda
+            utility_grad = (player.valuation / (x_i ** 2)) * \
+                dx_dz - self.resource.price
+        else:
+            # General case: a*x^(1-alpha)/(1-alpha) - lambda*z
+            # dU/dz = a*x^(-alpha) * dx/dz - lambda
+            utility_grad = player.valuation * \
+                (x_i ** (-player.alpha)) * dx_dz - self.resource.price
+
+        return utility_grad
 
     def run(self, max_duration):
         """Main Event Loop"""
         print(f"--- Starting Simulation (Duration: {max_duration}) ---")
+        print(
+            f"--- Departures: {'Enabled' if self.allow_departures else 'Disabled'} ---")
 
         while self.current_time < max_duration:
             # 1. Determine next event (Arrival vs Departure)
-            # Find the earliest departure
-            if self.departures:
-                next_departure_player = min(
-                    self.departures, key=lambda p: self.departures[p])
-                next_departure_time = self.departures[next_departure_player]
+            if self.allow_departures:
+                # Find the earliest departure
+                if self.departures:
+                    next_departure_player = min(
+                        self.departures, key=lambda p: self.departures[p])
+                    next_departure_time = self.departures[next_departure_player]
+                else:
+                    next_departure_player = None
+                    next_departure_time = float('inf')
             else:
+                # No departures when disabled
                 next_departure_player = None
                 next_departure_time = float('inf')
 
@@ -246,7 +362,10 @@ class Simulator:
                 break
 
             # 3. Re-calculate Equilibrium (Game Loop) because n changed
-            self.run_sbrd_convergence()
+            if self.convergence_method == 'gradient':
+                self.run_gradient_descent()
+            else:
+                self.run_sbrd_convergence()
 
             # 4. Record metrics for plotting
             self._record_metrics()
@@ -255,16 +374,19 @@ class Simulator:
         self.player_counter += 1
         # Randomize player attributes for heterogeneity
         new_budget = random.uniform(10, 50)
+        new_budget = 15
         new_valuation = random.uniform(1, 10)  # 'a_i' parameter
+        # new_valuation = 5
 
         p = Player(f"P{self.player_counter}", new_budget,
-                   alpha=2, valuation=new_valuation)
+                   alpha=1, valuation=new_valuation)
         self.active_players.append(p)
 
-        # Schedule this player's departure
-        dep_time = self.current_time + \
-            self._generate_event_time(self.departure_rate)
-        self.departures[p] = dep_time
+        # Schedule this player's departure only if departures are allowed
+        if self.allow_departures:
+            dep_time = self.current_time + \
+                self._generate_event_time(self.departure_rate)
+            self.departures[p] = dep_time
 
         print(
             f"[Time {self.current_time:.2f}] Arrival: {p.name}. Total Players: {len(self.active_players)}")
@@ -354,14 +476,20 @@ class Simulator:
             axes[1, 1].grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig('simulation_results.png', dpi=300, bbox_inches='tight')
-        print("\nPlots saved to 'simulation_results.png'")
+        plt.savefig(
+            f'simulation_results_{self.convergence_method}.png', dpi=300, bbox_inches='tight')
+        print(
+            f"\nPlots saved to 'simulation_results_{self.convergence_method}.png'")
         plt.show()
 
 
-def run_simulation():
+def run_simulation(convergence_method='sbrd', allow_departures=True):
     """
     Sets up and runs the Kelly mechanism simulation with default parameters.
+
+    Args:
+        convergence_method: 'sbrd' for Synchronous Best Response Dynamics or 'gradient' for Gradient Descent
+        allow_departures: If True, players can leave; if False, players stay forever
     """
     # --- Configuration ---
     ARRIVAL_RATE = 2.0     # lambda (Poisson process)
@@ -370,12 +498,20 @@ def run_simulation():
     PRICE = 1.0            # Lambda (Price)
     DURATION = 20.0        # Seconds to simulate
 
+    print(f"\n{'='*60}")
+    print(
+        f"Running Kelly Mechanism with {convergence_method.upper()} convergence")
+    print(f"Departures: {'Enabled' if allow_departures else 'Disabled'}")
+    print(f"{'='*60}")
+
     # 1. Initialize Resource
     resource = Resource(capacity=RESOURCE_CAPACITY, price=PRICE, delta=0.1)
 
     # 2. Initialize Simulator
     sim = Simulator(resource, arrival_rate=ARRIVAL_RATE,
-                    departure_rate=DEPARTURE_RATE)
+                    departure_rate=DEPARTURE_RATE,
+                    convergence_method=convergence_method,
+                    allow_departures=allow_departures)
 
     # 3. Run Simulation
     sim.run(max_duration=DURATION)
@@ -401,4 +537,16 @@ def run_simulation():
 
 
 if __name__ == "__main__":
-    run_simulation()
+    import random
+
+    # Run with SBRD and departures enabled
+    random.seed(42)
+    run_simulation(convergence_method='sbrd', allow_departures=True)
+
+    print("\n" + "="*60)
+    print("Now running with Gradient Descent and NO departures...")
+    print("="*60 + "\n")
+
+    # Run with Gradient Descent and departures disabled
+    random.seed(42)
+    run_simulation(convergence_method='gradient', allow_departures=False)
