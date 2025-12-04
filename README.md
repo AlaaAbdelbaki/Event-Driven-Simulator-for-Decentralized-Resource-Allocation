@@ -48,14 +48,20 @@ Both simulations use event-driven architecture with Poisson arrival processes an
 
 ### Kelly Mechanism Simulation
 
-- ✅ Alpha-fair resource allocation (α = 0, 1, 2)
-- ✅ Dynamic player arrivals and departures (configurable)
-- ✅ Two convergence methods:
+- ✅ **Alpha-fair resource allocation** (α = 0 for efficiency, α = 1 for proportional fairness, α = 2 for MPD)
+- ✅ **Configurable player dynamics**:
+  - Dynamic arrivals following Poisson process
+  - Optional exponential departures (toggleable)
+  - Persistent player mode (no departures)
+- ✅ **Two convergence algorithms**:
   - Synchronous Best Response Dynamics (SBRD)
-  - Gradient Descent optimization
-- ✅ Heterogeneous player budgets and valuations
-- ✅ Real-time price adjustment and allocation tracking
-- ✅ Extensive plotting and visualization capabilities
+  - Gradient Descent optimization with utility gradients
+- ✅ **Heterogeneous player characteristics**:
+  - Variable budgets (c_i)
+  - Different valuations (a_i)
+  - Strategic best-response bidding
+- ✅ **Real-time metrics**: Price tracking, allocation history, payment calculations
+- ✅ **Comprehensive visualization**: Player allocations, convergence plots, utility evolution
 
 ---
 
@@ -65,12 +71,16 @@ Both simulations use event-driven architecture with Poisson arrival processes an
 project/
 ├── admission_control.py          # Multi-server admission control simulation
 ├── pricing_and_bidding.py        # Kelly mechanism with pricing/bidding
-├── README.md                      # This file
+├── README.md                      # Project documentation
 ├── TODO.md                        # Project task tracking
+├── requirements.txt               # Python dependencies
 ├── research_paper_review.md       # Research paper analysis
 ├── simulation_assignment_review.md # Assignment review notes
 ├── ams/                           # Python virtual environment
-└── Multi Server Admission Control/ # Reference materials
+│   ├── Scripts/                   # Activation scripts
+│   └── Lib/site-packages/         # Installed packages
+├── Multi Server Admission Control/ # Reference materials
+└── Pricing and Bidding with the Kelly mechanism/ # Kelly mechanism references
 ```
 
 ---
@@ -114,7 +124,33 @@ source ams/bin/activate
 3. **Install dependencies**:
 
 ```bash
-pip install numpy matplotlib
+pip install -r requirements.txt
+```
+
+This will install all required packages:
+
+- `numpy` - Numerical computing and random distributions
+- `matplotlib` - Plotting and visualization
+- Supporting libraries (cycler, kiwisolver, pillow, etc.)
+
+---
+
+## ⚡ Quick Start
+
+```bash
+# Clone and setup
+git clone https://github.com/AlaaAbdelbaki/Event-Driven-Simulator-for-Decentralized-Resource-Allocation.git
+cd Event-Driven-Simulator-for-Decentralized-Resource-Allocation
+
+# Activate virtual environment (Windows PowerShell)
+.\ams\Scripts\Activate.ps1
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run simulations
+python admission_control.py
+python pricing_and_bidding.py
 ```
 
 ---
@@ -260,6 +296,30 @@ new_valuation = random.uniform(1, 10)    # Valuation range
 
 ## 📊 Results and Visualization
 
+### Example Output
+
+**Admission Control**:
+
+```
+Total Flows Processed: 203
+Total Flows Admitted: 130
+Total Flows Rejected: 73
+Rejection Rate: 35.96%
+Final System Utility: 847.32
+```
+
+**Kelly Mechanism**:
+
+```
+--- Starting Simulation (Duration: 20.0) ---
+--- Departures: Enabled ---
+[Time 0.45] Arrival: P1. Total Players: 1
+[Time 0.89] Arrival: P2. Total Players: 2
+...
+Converged after 5 iterations
+Final Allocations: {'P1': 23.45, 'P2': 31.67, ...}
+```
+
 ### Admission Control Plots
 
 1. **Server Utilization**: Shows the load on each server over time
@@ -281,6 +341,34 @@ new_valuation = random.uniform(1, 10)    # Valuation range
 - Resource allocation per player over time
 - Price dynamics
 - Utility evolution
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**Virtual environment activation fails**:
+
+- On Windows, you may need to enable script execution:
+  ```powershell
+  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+  ```
+
+**Import errors (ModuleNotFoundError)**:
+
+- Ensure virtual environment is activated
+- Reinstall dependencies: `pip install -r requirements.txt`
+
+**Plots not displaying**:
+
+- Check if matplotlib is properly installed
+- Try running with `python -m matplotlib` to verify installation
+
+**Simulation runs but no output**:
+
+- Check console for error messages
+- Verify parameters are within valid ranges (e.g., positive rates)
 
 ---
 
