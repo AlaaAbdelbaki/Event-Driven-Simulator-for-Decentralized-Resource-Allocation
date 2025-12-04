@@ -430,7 +430,7 @@ class Simulator:
         fig: Figure
 
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        fig.suptitle('Kelly Mechanism Simulation Results',
+        fig.suptitle(f'Kelly Mechanism Simulation Results ({self.convergence_method.upper()})',
                      fontsize=16, fontweight='bold')
 
         # Plot 1: Number of Active Players Over Time
@@ -539,7 +539,7 @@ def run_simulation(convergence_method='sbrd', allow_departures=False):
 if __name__ == "__main__":
     import random
 
-    allow_departures: bool = False
+    allow_departures: bool = True
 
     # Run with SBRD and departures enabled
     random.seed(42)
