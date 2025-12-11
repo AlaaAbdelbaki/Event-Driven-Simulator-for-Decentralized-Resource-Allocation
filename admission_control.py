@@ -1,307 +1,338 @@
+"""
+Event-Driven Simulation of Multi-Server Admission Control
+Based on AdmissionControl.pdf requirements
+
+Five Main Components:
+1. Area Traffic Generator - Generates flow arrivals (Poisson process)
+2. Area Load Balancer - Selects server for each flow
+3. Server - Hosts applications, processes flows with finite capacity
+4. Admission Control - Decides to admit or reject flows
+5. Application - Provides utility for processing flows
+"""
 
 import random
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.random as rnd
 
-# --- Simulation Parameters ---
+# =============================================================================
+# PARAMETRIC CONFIGURATION (as required by assignment)
+# =============================================================================
 
-# Number of servers in the system
-NUM_SERVERS = 4
-# Maximum number of flows a server can handle
-SERVER_CAPACITY = 10
-# Different classes of flows (e.g., video, IoT data, etc.)
-FLOW_CLASSES = ['video', 'iot', 'gaming', 'voice']
-# Average number of new flows arriving per time unit (for Poisson distribution)
-FLOW_ARRIVAL_RATE = 2.0
-# Average duration of a flow (for Exponential distribution)
-MEAN_FLOW_DURATION = 15.0
-# Total simulation time
-SIMULATION_TIME = 100
+NUM_SERVERS = 1
+SERVER_CAPACITY = 50.0  # Reduced capacity to create congestion
+FLOW_ARRIVAL_RATE = 3.0  # Increased arrival rate (more flows)
+MEAN_FLOW_DURATION = 20.0  # Longer duration (flows stay longer)
+SIMULATION_TIME = 100  # Total simulation time
+FLOW_SIZE_RANGE = (5.0, 15.0)  # Larger flow sizes to fill capacity faster
 
-# Admission Control Parameters
-ADMISSION_THRESHOLD = 0.85  # Load threshold for selective admission
 
-# --- Core Classes ---
-
+# =============================================================================
+# CORE CLASSES - Five Main Components
+# =============================================================================
 
 class Flow:
-    """Represents an information flow to be processed."""
+    """
+    Represents a network flow to be processed.
+    Duration follows EXPONENTIAL distribution as per AdmissionControl.pdf requirements.
+    """
 
-    def __init__(self, flow_id, flow_class, creation_time, priority=None):
+    def __init__(self, flow_id: int, size: float, flow_class: str = None, source_id: int = 0):
         self.id = flow_id
-        self.flow_class = flow_class
-        self.creation_time = creation_time
-        # Duration is drawn from an exponential distribution
+        self.size = size
+        self.flow_class = flow_class or "generic"
+        self.source_id = source_id
         self.duration = np.random.exponential(MEAN_FLOW_DURATION)
-        # Priority for admission decisions (higher is more important)
-        self.priority = priority if priority is not None else random.uniform(
-            1.0, 10.0)
 
     def __repr__(self):
-        return f"Flow(id={self.id}, class='{self.flow_class}', duration={self.duration:.2f}, priority={self.priority:.2f})"
+        return f"Flow(id={self.id}, src={self.source_id}, class={self.flow_class}, size={self.size:.2f}, duration={self.duration:.1f})"
 
 
 class Application:
-    """Represents an application running on a server that can process flows."""
+    """
+    Represents an application running on a server.
+    Provides utility for processing flows.
+    """
 
-    def __init__(self, name, supported_flow_classes: list[str], utility_per_flow):
+    def __init__(self, name: str, base_utility: float):
         self.name = name
-        self.supported_flow_classes: list[str] = supported_flow_classes
-        self.utility_per_flow = utility_per_flow
+        self.base_utility = base_utility
+        self.source_coefficients = {
+            i: random.uniform(0.8, 1.2) for i in range(1, 4)}
 
-    def get_utility(self, flow: Flow):
-        """Calculates the utility of processing a given flow."""
-        if flow.flow_class in self.supported_flow_classes:
-            return self.utility_per_flow
-        return 0
+    def calculate_utility(self, active_flows: list[Flow]) -> float:
+        """
+        Calculates utility based on source of flows and congestion from each area.
+        U = Sum( Base * Coeff(source) / (1 + log(Count(source))) )
+        """
+        if not active_flows:
+            return 0.0
+
+        source_counts = defaultdict(int)
+        for flow in active_flows:
+            source_counts[flow.source_id] += 1
+
+        total_utility = 0.0
+        for flow in active_flows:
+            val = self.base_utility * \
+                self.source_coefficients.get(flow.source_id, 1.0)
+            count = source_counts[flow.source_id]
+            congestion_factor = 1.0 + np.log(count)
+            total_utility += val / congestion_factor
+
+        return total_utility
 
     def __repr__(self):
-        return f"App(name='{self.name}', supports={self.supported_flow_classes})"
+        return f"App({self.name}, base_util={self.base_utility})"
 
 
 class Server:
-    """Represents a server that hosts applications and processes flows."""
+    """
+    Represents a server with finite capacity.
+    Hosts applications and processes flows.
+    """
 
-    def __init__(self, server_id, capacity):
+    def __init__(self, server_id: int, capacity: float, applications: list[Application]) -> None:
         self.id = server_id
         self.capacity = capacity
-        self.active_flows = {}  # flow_id -> (flow_obj, end_time)
-        self.applications = []
+        self.applications: list[Application] = applications
+        self.active_flows: list[Flow] = []
 
-    def current_load(self):
-        """Returns the number of active flows."""
-        return len(self.active_flows)
+    def current_load(self) -> float:
+        """Returns current load (sum of active flow sizes)."""
+        return sum(flow.size for flow in self.active_flows)
 
-    def get_active_flow_objects(self):
-        """Returns list of active flow objects."""
-        return [flow for flow, _ in self.active_flows.values()]
+    def available_capacity(self) -> float:
+        """Returns remaining capacity."""
+        return self.capacity - self.current_load()
 
-    def add_application(self, app):
-        """Adds an application to the server."""
-        self.applications.append(app)
+    def can_admit(self, flow: Flow) -> bool:
+        """Checks if flow can be admitted based on capacity."""
+        return self.current_load() + flow.size <= self.capacity
 
-    def get_utility_for_flow(self, flow):
-        """Finds the best utility this server's applications can offer for a flow."""
-        if not self.applications:
-            return 0
-        return max(app.get_utility(flow) for app in self.applications)
+    def add_flow(self, flow: Flow, current_time: float):
+        """Admits a flow to the server."""
+        flow.admission_time = current_time
+        flow.completion_time = current_time + flow.duration
+        self.active_flows.append(flow)
 
-    def get_total_utility(self):
-        """Calculate total utility from all active flows."""
-        total = 0
-        for flow, _ in self.active_flows.values():
-            total += self.get_utility_for_flow(flow)
-        return total
-
-    def add_flow(self, flow, current_time):
-        """Adds a flow to the server's active processes."""
-        end_time = current_time + flow.duration
-        self.active_flows[flow.id] = (flow, end_time)
-
-    def update_active_flows(self, current_time):
-        """Removes flows that have completed."""
-        completed_flows = [
-            flow_id for flow_id, (_, end_time) in self.active_flows.items()
-            if current_time >= end_time
+    def update_flows(self, current_time: float) -> int:
+        """Removes completed flows and returns count of removed flows."""
+        initial_count = len(self.active_flows)
+        self.active_flows = [
+            flow for flow in self.active_flows
+            if flow.completion_time > current_time
         ]
-        for flow_id in completed_flows:
-            del self.active_flows[flow_id]
-        return len(completed_flows)
+        return initial_count - len(self.active_flows)
+
+    def get_total_utility(self) -> float:
+        """Calculates total utility from all applications processing valid flows."""
+        # Each application processes the active flows and derives utility
+        return sum(app.calculate_utility(self.active_flows) for app in self.applications)
 
     def __repr__(self):
-        return f"Server(id={self.id}, load={self.current_load()}/{self.capacity})"
-
-
-class UtilityBasedAdmissionController:
-    """Utility and priority-based admission control for multi-server systems."""
-
-    def __init__(self, admission_threshold=ADMISSION_THRESHOLD):
-        """
-        Args:
-            admission_threshold: Load threshold (0-1) for selective admission
-        """
-        self.admission_threshold = admission_threshold
-
-    def admit(self, flow: Flow, server: Server) -> bool:
-        """
-        Decides whether to admit a flow based on:
-        1. Server capacity constraints
-        2. Flow priority
-        3. Expected utility gain
-        4. Current server load
-        """
-        # Check basic capacity
-        if server.current_load() >= server.capacity:
-            return False
-
-        # Calculate expected utility if admitted
-        utility = server.get_utility_for_flow(flow)
-
-        # Always reject flows with no utility
-        if utility <= 0:
-            return False
-
-        # Priority-based admission: prefer high-priority flows when near capacity
-        load_ratio = server.current_load() / server.capacity
-
-        if load_ratio > self.admission_threshold:
-            # Near capacity: be selective based on priority
-            # Only admit high-priority flows (priority > 5.0)
-            return flow.priority >= 5.0
-        else:
-            # Below threshold: admit flows with positive utility
-            return True
+        return f"Server(id={self.id}, load={self.current_load():.1f}/{self.capacity})"
 
 
 class AreaTrafficGenerator:
-    """Generates incoming flows for an area."""
+    """
+    Generates flow arrival events using Poisson process.
+    Inter-arrival times are exponentially distributed.
+    """
 
-    def __init__(self):
+    def __init__(self, arrival_rate: float, mean_duration: float):
+        self.arrival_rate = arrival_rate
+        self.mean_duration = mean_duration
         self.flow_counter = 0
 
-    def generate_events(self, total_time):
-        """Generates a timeline of flow arrival events."""
+    def generate_events(self, total_time: int) -> list:
+        """
+        Generates timeline of flow arrival events.
+        Returns list of (time, event_type, flow) tuples.
+        """
         events = []
-        current_time = 0
+        current_time = 0.0
+
         while current_time < total_time:
-            # Time to next arrival from Poisson process
-            time_to_next = np.random.exponential(1.0 / FLOW_ARRIVAL_RATE)
-            current_time += time_to_next
+            # Exponential inter-arrival time (Poisson process)
+            inter_arrival = rnd.exponential(1.0 / self.arrival_rate)
+            current_time += inter_arrival
+
             if current_time < total_time:
                 self.flow_counter += 1
-                flow_class = random.choice(FLOW_CLASSES)
-                flow = Flow(self.flow_counter, flow_class, current_time)
+
+                # Create flow with random size and type
+                flow_size = rnd.uniform(*FLOW_SIZE_RANGE)
+                flow_class = random.choice(['video', 'iot', 'gaming', 'voice'])
+                source_id = random.randint(1, 3)  # Random source area 1-3
+                flow = Flow(
+                    flow_id=self.flow_counter,
+                    size=flow_size,
+                    flow_class=flow_class,
+                    source_id=source_id
+                )
+
                 events.append((current_time, 'arrival', flow))
+
         return events
 
 
-class RandomizedLoadBalancer:
-    """Sends flows to servers randomly."""
+class AreaLoadBalancer:
+    """
+    Decides which server to send each flow to.
+    Uses simple randomized selection (allowed by assignment).
+    """
 
-    def __init__(self, servers):
+    def __init__(self, servers: list[Server]) -> None:
         self.servers = servers
 
-    def select_server(self, flow):
-        """Selects a server at random."""
+    def assign_server(self) -> Server:
+        """Selects a server randomly."""
         return random.choice(self.servers)
 
 
-# --- Simulation ---
+class AdmissionControl:
+    """
+    Decides whether to admit or reject flows.
+    Uses simple capacity-based heuristic (not optimal RL policy).
+    As per assignment: "simple admission control policy with some heuristics"
+    """
+
+    def __init__(self, server: Server, load_balancer: AreaLoadBalancer) -> None:
+        self.server = server
+        self.load_balancer = load_balancer
+
+    def admit(self, flow: Flow, server: Server) -> bool:
+        """
+        Simple admission policy: admit if capacity is available.
+        This is the heuristic approach allowed by the assignment.
+        """
+        return server.can_admit(flow)
+
+
+# =============================================================================
+# SIMULATION ENGINE
+# =============================================================================
 
 class Simulation:
-    """Runs the event-driven simulation for multi-server admission control."""
+    """Event-driven simulation orchestrator."""
 
     def __init__(self):
-        # 1. Create Servers
-        self.servers = [Server(i, SERVER_CAPACITY) for i in range(NUM_SERVERS)]
+        # Create servers with applications
+        self.servers = []
+        for i in range(NUM_SERVERS):
+            # Each server gets applications with random base utilities
+            apps = [
+                Application(f"App1_Server{i}",
+                            base_utility=rnd.uniform(5, 15)),
+                Application(f"App2_Server{i}", base_utility=rnd.uniform(3, 10))
+            ]
+            server = Server(
+                server_id=i, capacity=SERVER_CAPACITY, applications=apps)
+            self.servers.append(server)
 
-        # 2. Create and distribute applications (example setup)
-        app1 = Application("VideoAnalytics", ['video', 'gaming'], 10)
-        app2 = Application("IoTSensor", ['iot'], 5)
-        app3 = Application("GeneralPurpose", FLOW_CLASSES, 2)
+        # Create other components
+        self.traffic_generator = AreaTrafficGenerator(
+            arrival_rate=FLOW_ARRIVAL_RATE,
+            mean_duration=MEAN_FLOW_DURATION
+        )
+        self.load_balancer = AreaLoadBalancer(self.servers)
+        self.admission_control = AdmissionControl(
+            # Reference server (not used in current policy)
+            server=self.servers[0],
+            load_balancer=self.load_balancer
+        )
 
-        # Distribute apps to servers (e.g., some specialization)
-        self.servers[0].add_application(app1)
-        self.servers[1].add_application(app2)
-        self.servers[2].add_application(app3)
-        self.servers[3].add_application(app1)
-        self.servers[3].add_application(app2)
-
-        # 3. Initialize other components
-        self.traffic_generator = AreaTrafficGenerator()
-        self.load_balancer = RandomizedLoadBalancer(self.servers)
-        self.admission_controller = UtilityBasedAdmissionController()
-
-        # Simulation stats
-        self.total_admitted = 0
-        self.total_rejected = 0
-        self.total_utility = 0
+        # Metrics
+        self.total_flows = 0
+        self.admitted_flows = 0
+        self.rejected_flows = 0
 
         # Metrics tracking for visualization
         self.time_series = []
         self.admitted_series = []
         self.rejected_series = []
-        self.utility_series = []
-        self.server_load_series = defaultdict(list)  # server_id -> [loads]
+        self.server_loads = defaultdict(list)  # server_id -> [loads over time]
 
     def run(self):
-        """Executes the simulation."""
-        print("--- Starting Simulation ---")
-        print(f"Servers: {self.servers}")
-        print(f"Apps distributed.")
+        """Execute the event-driven simulation."""
+        print("=" * 70)
+        print("MULTI-SERVER ADMISSION CONTROL SIMULATION")
+        print("=" * 70)
+        print(f"\nConfiguration:")
+        print(f"  Number of Servers: {NUM_SERVERS}")
+        print(f"  Server Capacity: {SERVER_CAPACITY}")
+        print(f"  Flow Arrival Rate: {FLOW_ARRIVAL_RATE}")
+        print(f"  Mean Flow Duration: {MEAN_FLOW_DURATION}")
+        print(f"  Simulation Time: {SIMULATION_TIME}")
+        print("\n" + "-" * 70)
+        print("Starting simulation...\n")
 
-        # Generate all flow arrival events upfront
-        arrival_events = self.traffic_generator.generate_events(
-            SIMULATION_TIME)
+        # Generate all arrival events
+        events = self.traffic_generator.generate_events(SIMULATION_TIME)
+        self.total_flows = len(events)
 
-        # The main event loop
-        for event_time, event_type, event_data in arrival_events:
-
-            # First, process any flow completions that happened before this event
+        # Process events chronologically
+        for event_time, event_type, flow in events:
+            # Update all servers (remove completed flows)
             for server in self.servers:
-                server.update_active_flows(event_time)
+                server.update_flows(event_time)
 
-            # Process the arrival event
+            # Process arrival event
             if event_type == 'arrival':
-                flow = event_data
-                print(f"\nTime {event_time:.2f}: New flow arrival {flow}")
+                # Load balancer selects target server
+                target_server = self.load_balancer.assign_server()
 
-                # 1. Load Balancer selects a server
-                target_server = self.load_balancer.select_server(flow)
-                print(
-                    f"  -> Routed to Server {target_server.id} (load: {target_server.current_load}/{target_server.capacity})")
-
-                # 2. Admission Control makes a decision
-                if self.admission_controller.admit(flow, target_server):
-                    # 3. If admitted, add flow to server and update utility
-                    utility = target_server.get_utility_for_flow(flow)
+                # Admission control makes decision
+                if self.admission_control.admit(flow, target_server):
                     target_server.add_flow(flow, event_time)
-
-                    self.total_admitted += 1
-                    self.total_utility += utility
-
-                    print(
-                        f"  -> ADMITTED. Utility: {utility:.2f}, Priority: {flow.priority:.2f}, "
-                        f"Load: {target_server.current_load()}")
+                    self.admitted_flows += 1
+                    decision = "ADMITTED"
                 else:
-                    # 4. If rejected, log it
-                    self.total_rejected += 1
-                    print(
-                        f"  -> REJECTED. Priority: {flow.priority:.2f}, Utility would be: {target_server.get_utility_for_flow(flow)}")
+                    self.rejected_flows += 1
+                    decision = "REJECTED"
 
-                # 5. Record metrics
+                # Log event
+                print(f"[t={event_time:6.2f}] {flow} -> Server {target_server.id} "
+                      f"(Load: {target_server.current_load():.1f}/{target_server.capacity}) "
+                      f"=> {decision}")
+
+                # Record metrics for plotting
                 self._record_metrics(event_time)
 
-        # Final cleanup for flows that finish after the last arrival
+        # Final statistics
+        print("\n" + "-" * 70)
+        print("SIMULATION COMPLETE")
+        print("-" * 70)
+        print(f"\nStatistics:")
+        print(f"  Total Flows Generated: {self.total_flows}")
+        print(f"  Flows Admitted: {self.admitted_flows}")
+        print(f"  Flows Rejected: {self.rejected_flows}")
+
+        if self.total_flows > 0:
+            admission_rate = (self.admitted_flows / self.total_flows) * 100
+            rejection_rate = (self.rejected_flows / self.total_flows) * 100
+            print(f"  Admission Rate: {admission_rate:.2f}%")
+            print(f"  Rejection Rate: {rejection_rate:.2f}%")
+
+        print(f"\nFinal Server States:")
         for server in self.servers:
-            server.update_active_flows(SIMULATION_TIME)
+            print(f"  {server} - Active Flows: {len(server.active_flows)}, "
+                  f"Utility: {server.get_total_utility():.2f}")
 
-        print("\n--- Simulation Finished ---")
-        total_flows = self.total_admitted + self.total_rejected
-        print(f"Total flows generated: {total_flows}")
-        print(f"Admitted: {self.total_admitted}")
-        print(f"Rejected: {self.total_rejected}")
-        print(f"Total Utility: {self.total_utility:.2f}")
+        print("\n" + "=" * 70)
 
-        if total_flows > 0:
-            rejection_rate = (self.total_rejected / total_flows) * 100
-            avg_utility = self.total_utility / \
-                self.total_admitted if self.total_admitted > 0 else 0
-            print(f"Rejection Rate: {rejection_rate:.2f}%")
-            print(f"Average Utility per Flow: {avg_utility:.2f}")
-
-    def _record_metrics(self, current_time):
-        """Record simulation metrics for plotting."""
+    def _record_metrics(self, current_time: float):
+        """Record simulation metrics for visualization."""
         self.time_series.append(current_time)
-        self.admitted_series.append(self.total_admitted)
-        self.rejected_series.append(self.total_rejected)
-        self.utility_series.append(self.total_utility)
+        self.admitted_series.append(self.admitted_flows)
+        self.rejected_series.append(self.rejected_flows)
 
-        # Record server loads
+        # Record each server's current load
         for server in self.servers:
-            self.server_load_series[server.id].append(server.current_load())
+            self.server_loads[server.id].append(server.current_load())
 
     def plot_results(self):
         """Generate visualization of simulation results."""
@@ -313,74 +344,89 @@ class Simulation:
         fig.suptitle('Multi-Server Admission Control Simulation Results',
                      fontsize=16, fontweight='bold')
 
-        # Plot 1: Admitted vs Rejected Flows
-        axes[0, 0].plot(self.time_series, self.admitted_series,
-                        'g-', label='Admitted', linewidth=2)
-        axes[0, 0].plot(self.time_series, self.rejected_series,
-                        'r-', label='Rejected', linewidth=2)
-        axes[0, 0].set_xlabel('Time')
-        axes[0, 0].set_ylabel('Cumulative Flows')
-        axes[0, 0].set_title('Admitted vs Rejected Flows Over Time')
-        axes[0, 0].legend()
+        # Plot 1: Server Loads Over Time
+        for server_id, loads in self.server_loads.items():
+            axes[0, 0].plot(self.time_series, loads,
+                            label=f'Server {server_id}', linewidth=2, marker='o', markersize=3)
+        axes[0, 0].axhline(y=SERVER_CAPACITY, color='r',
+                           linestyle='--', alpha=0.5, linewidth=2, label='Capacity')
+        axes[0, 0].set_xlabel('Time', fontsize=11)
+        axes[0, 0].set_ylabel('Server Load', fontsize=11)
+        axes[0, 0].set_title('Server Loads Over Time',
+                             fontsize=12, fontweight='bold')
+        axes[0, 0].legend(loc='best')
         axes[0, 0].grid(True, alpha=0.3)
 
-        # Plot 2: Cumulative Utility
-        axes[0, 1].plot(self.time_series, self.utility_series,
-                        'b-', linewidth=2)
-        axes[0, 1].set_xlabel('Time')
-        axes[0, 1].set_ylabel('Cumulative Utility')
-        axes[0, 1].set_title('Total Utility Gained Over Time')
+        # Plot 2: Admitted vs Rejected Flows
+        axes[0, 1].plot(self.time_series, self.admitted_series,
+                        'g-', label='Admitted', linewidth=2)
+        axes[0, 1].plot(self.time_series, self.rejected_series,
+                        'r-', label='Rejected', linewidth=2)
+        axes[0, 1].set_xlabel('Time', fontsize=11)
+        axes[0, 1].set_ylabel('Cumulative Flows', fontsize=11)
+        axes[0, 1].set_title('Admitted vs Rejected Flows',
+                             fontsize=12, fontweight='bold')
+        axes[0, 1].legend(loc='best')
         axes[0, 1].grid(True, alpha=0.3)
 
-        # Plot 3: Server Loads
-        for server_id, loads in self.server_load_series.items():
-            axes[1, 0].plot(self.time_series, loads,
-                            label=f'Server {server_id}', linewidth=1.5, marker='o', markersize=2)
-        axes[1, 0].axhline(y=SERVER_CAPACITY, color='r',
-                           linestyle='--', alpha=0.5, label='Capacity')
-        axes[1, 0].set_xlabel('Time')
-        axes[1, 0].set_ylabel('Active Flows')
-        axes[1, 0].set_title('Server Load Over Time')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-
-        # Plot 4: Admission Rate
+        # Plot 3: Admission Rate Over Time
         if len(self.time_series) > 1:
-            total_flows = [a + r for a, r in zip(
+            total_flows_series = [a + r for a, r in zip(
                 self.admitted_series, self.rejected_series)]
-            admission_rates = [a / t * 100 if t > 0 else 0 for a,
-                               t in zip(self.admitted_series, total_flows)]
-            axes[1, 1].plot(self.time_series, admission_rates,
+            admission_rates = [a / t * 100 if t > 0 else 0 for a, t in
+                               zip(self.admitted_series, total_flows_series)]
+            axes[1, 0].plot(self.time_series, admission_rates,
                             'm-', linewidth=2)
-            axes[1, 1].set_xlabel('Time')
-            axes[1, 1].set_ylabel('Admission Rate (%)')
-            axes[1, 1].set_title('Admission Rate Over Time')
-            axes[1, 1].grid(True, alpha=0.3)
-            axes[1, 1].set_ylim([0, 105])
+            axes[1, 0].set_xlabel('Time', fontsize=11)
+            axes[1, 0].set_ylabel('Admission Rate (%)', fontsize=11)
+            axes[1, 0].set_title('Admission Rate Over Time',
+                                 fontsize=12, fontweight='bold')
+            axes[1, 0].grid(True, alpha=0.3)
+            axes[1, 0].set_ylim([0, 105])
+
+        # Plot 4: Final Server Utilization (Bar Chart)
+        server_ids = [f'S{i}' for i in range(NUM_SERVERS)]
+        final_loads = [self.servers[i].current_load()
+                       for i in range(NUM_SERVERS)]
+        colors = ['#2ecc71' if load < SERVER_CAPACITY * 0.7 else
+                  '#f39c12' if load < SERVER_CAPACITY * 0.9 else '#e74c3c'
+                  for load in final_loads]
+
+        bars = axes[1, 1].bar(server_ids, final_loads,
+                              color=colors, alpha=0.7, edgecolor='black')
+        axes[1, 1].axhline(y=SERVER_CAPACITY, color='r',
+                           linestyle='--', linewidth=2, label='Capacity')
+        axes[1, 1].set_xlabel('Server', fontsize=11)
+        axes[1, 1].set_ylabel('Final Load', fontsize=11)
+        axes[1, 1].set_title('Final Server Utilization',
+                             fontsize=12, fontweight='bold')
+        axes[1, 1].legend(loc='best')
+        axes[1, 1].grid(True, alpha=0.3, axis='y')
+
+        # Add value labels on bars
+        for bar, load in zip(bars, final_loads):
+            height = bar.get_height()
+            axes[1, 1].text(bar.get_x() + bar.get_width()/2., height,
+                            f'{load:.1f}',
+                            ha='center', va='bottom', fontsize=10, fontweight='bold')
 
         plt.tight_layout()
         plt.savefig('admission_control_results.png',
                     dpi=300, bbox_inches='tight')
-        print("\nPlots saved to 'admission_control_results.png'")
+        print("\n📊 Plots saved to 'admission_control_results.png'")
         plt.show()
 
 
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
-    # To make results reproducible for a demo
+    # Set seed for reproducibility
     random.seed(42)
     np.random.seed(42)
 
-    print("=" * 70)
-    print("Multi-Server Admission Control Simulation")
-    print("=" * 70)
-    print(f"\nConfiguration:")
-    print(
-        f"  Servers: {NUM_SERVERS}, Capacity: {SERVER_CAPACITY} flows/server")
-    print(
-        f"  Arrival Rate: {FLOW_ARRIVAL_RATE}, Mean Duration: {MEAN_FLOW_DURATION}")
-    print(f"  Admission Threshold: {ADMISSION_THRESHOLD}")
-    print(f"  Simulation Time: {SIMULATION_TIME}\\n")
-
+    # Create and run simulation
     sim = Simulation()
     sim.run()
 

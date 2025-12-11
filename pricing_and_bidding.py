@@ -539,7 +539,7 @@ def run_simulation(convergence_method='sbrd', allow_departures=False):
 if __name__ == "__main__":
     import random
 
-    allow_departures: bool = True
+    allow_departures: bool = False
 
     # Run with SBRD and departures enabled
     random.seed(42)
