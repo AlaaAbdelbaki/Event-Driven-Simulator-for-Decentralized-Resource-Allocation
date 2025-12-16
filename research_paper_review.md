@@ -61,3 +61,23 @@ The simulation aligns with a decentralized approach because the admission contro
 3.  The decision is based on the **local state** of that server (its `current_load`).
 
 While our controller is simple and doesn't communicate with other servers, this structure is the foundation for decentralized control. In a more complex implementation, each server would have its own admission control agent making decisions independently, which is exactly the structure the DRCPO algorithm is designed for.
+
+---
+
+### Question 6: Simulation vs. Research Paper Algorithm
+
+**Question:** The `admission_control.py` script uses a simple, rule-based `UtilityBasedAdmissionController`. How does this differ from the **DRCPO** algorithm proposed in the paper, and what would be the next steps to evolve the simulation to be more like the paper's proposal?
+
+**Expected Answer:**
+The current simulation's controller is a simple heuristic, not a learning agent.
+
+*   **Difference:**
+    *   **Rule-Based vs. Learning:** Our controller uses a fixed `ADMISSION_THRESHOLD`. If the server load is above this, it only accepts high-priority flows. This logic is static and handwritten. In contrast, the paper's **DRCPO** is a Reinforcement Learning algorithm. It would **learn** an optimal policy over time by observing the outcomes (rewards and constraint violations) of its decisions. It doesn't rely on a fixed threshold but instead learns a complex function that maps system state to an optimal admission probability.
+    *   **Optimality:** Our simple controller is not guaranteed to be optimal. It might reject a low-priority flow that could have led to a high long-term reward. DRCPO is designed to find a policy that maximizes the long-term discounted reward while respecting capacity constraints.
+    *   **Adaptability:** The RL agent (DRCPO) could adapt to changing traffic patterns or server availability, whereas our current script's logic is fixed.
+
+*   **Next Steps for Evolution:**
+    1.  **Replace the Controller:** The `UtilityBasedAdmissionController` would need to be replaced with an RL agent implementing the DRCPO algorithm.
+    2.  **State and Action Space:** We would need to formally define the state space (e.g., current server loads, incoming flow's features) and the action space (admit/reject) for the RL agent.
+    3.  **Training Loop:** The simulation would become a training environment. We would run many episodes (like the current `sim.run()`), and at each step, the agent would take an action, receive a reward and the new state, and update its policy (its neural network weights).
+    4.  **Constraint Handling:** A key part would be implementing the "constrained" part of the policy optimization, where the agent learns to avoid actions that lead to violating the server capacity constraints in the long run.

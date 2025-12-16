@@ -7,6 +7,8 @@ import numpy as np
 
 # --- Simulation Parameters ---
 
+# Number of areas in the system (each area has independent traffic)
+NUM_AREAS = 3
 # Number of servers in the system
 NUM_SERVERS = 2
 # Maximum number of flows a server can handle
@@ -29,10 +31,11 @@ ADMISSION_THRESHOLD = 0.85  # Load threshold for selective admission
 class Flow:
     """Represents an information flow to be processed."""
 
-    def __init__(self, flow_id, flow_class, creation_time, priority=None):
+    def __init__(self, flow_id, flow_class, creation_time, area_id, priority=None):
         self.id = flow_id
         self.flow_class = flow_class
         self.creation_time = creation_time
+        self.area_id = area_id  # Which area generated this flow
         # Duration is drawn from an exponential distribution
         self.duration = np.random.exponential(MEAN_FLOW_DURATION)
         # Priority for admission decisions (higher is more important)
@@ -40,7 +43,7 @@ class Flow:
             1.0, 10.0)
 
     def __repr__(self):
-        return f"Flow(id={self.id}, class='{self.flow_class}', duration={self.duration:.2f}, priority={self.priority:.2f})"
+        return f"Flow(id={self.id}, area={self.area_id}, class='{self.flow_class}', duration={self.duration:.2f}, priority={self.priority:.2f})"
 
 
 class Application:
@@ -158,11 +161,12 @@ class UtilityBasedAdmissionController:
 class AreaTrafficGenerator:
     """Generates incoming flows for an area."""
 
-    def __init__(self):
+    def __init__(self, area_id):
+        self.area_id = area_id
         self.flow_counter = 0
 
     def generate_events(self, total_time):
-        """Generates a timeline of flow arrival events."""
+        """Generates a timeline of flow arrival events for this area."""
         events = []
         current_time = 0
         while current_time < total_time:
@@ -172,7 +176,9 @@ class AreaTrafficGenerator:
             if current_time < total_time:
                 self.flow_counter += 1
                 flow_class = random.choice(FLOW_CLASSES)
-                flow = Flow(self.flow_counter, flow_class, current_time)
+                # Create flow with global ID: area_id.flow_counter
+                flow_id = f"{self.area_id}.{self.flow_counter}"
+                flow = Flow(flow_id, flow_class, current_time, self.area_id)
                 events.append((current_time, 'arrival', flow))
         return events
 
@@ -213,15 +219,21 @@ class Simulation:
             target_server = random.choice(self.servers)
             target_server.add_application(app)
 
-        # 3. Initialize other components
-        self.traffic_generator = AreaTrafficGenerator()
+        # 3. Initialize multiple area traffic generators (one per area)
+        self.traffic_generators = [
+            AreaTrafficGenerator(area_id) for area_id in range(NUM_AREAS)
+        ]
         self.load_balancer = RandomizedLoadBalancer(self.servers)
         self.admission_controller = UtilityBasedAdmissionController()
 
-        # Simulation stats
+        # Simulation stats (overall and per-area)
         self.total_admitted = 0
         self.total_rejected = 0
         self.total_utility = 0
+
+        # Per-area statistics
+        self.area_stats = defaultdict(
+            lambda: {'admitted': 0, 'rejected': 0, 'utility': 0})
 
         # Metrics tracking for visualization
         self.time_series = []
@@ -229,16 +241,28 @@ class Simulation:
         self.rejected_series = []
         self.utility_series = []
         self.server_load_series = defaultdict(list)  # server_id -> [loads]
+        self.area_load_series = defaultdict(
+            list)  # area_id -> [flows over time]
 
     def run(self):
         """Executes the simulation."""
         print("--- Starting Simulation ---")
+        print(f"Number of Areas: {NUM_AREAS}")
         print(f"Servers: {self.servers}")
         print(f"Apps distributed.")
 
-        # Generate all flow arrival events upfront
-        arrival_events = self.traffic_generator.generate_events(
-            SIMULATION_TIME)
+        # Generate flow arrival events from all areas
+        all_events = []
+        for generator in self.traffic_generators:
+            area_events = generator.generate_events(SIMULATION_TIME)
+            all_events.extend(area_events)
+
+        # Sort all events by time (merge multiple area event streams)
+        arrival_events = sorted(all_events, key=lambda x: x[0])
+
+        print(f"Total events generated: {len(arrival_events)}")
+        print(
+            f"Events per area: {[gen.flow_counter for gen in self.traffic_generators]}")
 
         # The main event loop
         for event_time, event_type, event_data in arrival_events:
@@ -266,12 +290,18 @@ class Simulation:
                     self.total_admitted += 1
                     self.total_utility += utility
 
+                    # Update per-area statistics
+                    self.area_stats[flow.area_id]['admitted'] += 1
+                    self.area_stats[flow.area_id]['utility'] += utility
+
                     print(
                         f"  -> ADMITTED. Utility: {utility:.2f}, Priority: {flow.priority:.2f}, "
                         f"Load: {target_server.current_load()}")
                 else:
                     # 4. If rejected, log it
                     self.total_rejected += 1
+                    self.area_stats[flow.area_id]['rejected'] += 1
+
                     print(
                         f"  -> REJECTED. Priority: {flow.priority:.2f}, Utility would be: {target_server.get_utility_for_flow(flow)}")
 
@@ -284,17 +314,31 @@ class Simulation:
 
         print("\n--- Simulation Finished ---")
         total_flows = self.total_admitted + self.total_rejected
-        print(f"Total flows generated: {total_flows}")
-        print(f"Admitted: {self.total_admitted}")
-        print(f"Rejected: {self.total_rejected}")
-        print(f"Total Utility: {self.total_utility:.2f}")
+        print(f"\nOverall Statistics:")
+        print(f"  Total flows generated: {total_flows}")
+        print(f"  Admitted: {self.total_admitted}")
+        print(f"  Rejected: {self.total_rejected}")
+        print(f"  Total Utility: {self.total_utility:.2f}")
 
         if total_flows > 0:
             rejection_rate = (self.total_rejected / total_flows) * 100
             avg_utility = self.total_utility / \
                 self.total_admitted if self.total_admitted > 0 else 0
-            print(f"Rejection Rate: {rejection_rate:.2f}%")
-            print(f"Average Utility per Flow: {avg_utility:.2f}")
+            print(f"  Rejection Rate: {rejection_rate:.2f}%")
+            print(f"  Average Utility per Flow: {avg_utility:.2f}")
+
+        # Print per-area statistics
+        print(f"\nPer-Area Statistics:")
+        for area_id in sorted(self.area_stats.keys()):
+            stats = self.area_stats[area_id]
+            area_total = stats['admitted'] + stats['rejected']
+            area_rejection_rate = (
+                stats['rejected'] / area_total * 100) if area_total > 0 else 0
+            print(f"  Area {area_id}:")
+            print(
+                f"    Flows: {area_total} (Admitted: {stats['admitted']}, Rejected: {stats['rejected']})")
+            print(f"    Rejection Rate: {area_rejection_rate:.2f}%")
+            print(f"    Utility: {stats['utility']:.2f}")
 
     def _record_metrics(self, current_time):
         """Record simulation metrics for plotting."""
@@ -313,8 +357,9 @@ class Simulation:
             print("No metrics to plot.")
             return
 
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle('Multi-Server Admission Control Simulation Results',
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        fig.suptitle(f'Multi-Area Multi-Server Admission Control Simulation Results\n'
+                     f'{NUM_AREAS} Areas, {NUM_SERVERS} Servers',
                      fontsize=16, fontweight='bold')
 
         # Plot 1: Admitted vs Rejected Flows
@@ -362,6 +407,37 @@ class Simulation:
             axes[1, 1].grid(True, alpha=0.3)
             axes[1, 1].set_ylim([0, 105])
 
+        # Plot 5: Per-Area Statistics (Bar Chart)
+        area_ids = sorted(self.area_stats.keys())
+        admitted_by_area = [self.area_stats[aid]['admitted']
+                            for aid in area_ids]
+        rejected_by_area = [self.area_stats[aid]['rejected']
+                            for aid in area_ids]
+
+        x_pos = np.arange(len(area_ids))
+        width = 0.35
+        axes[0, 2].bar(x_pos - width/2, admitted_by_area, width,
+                       label='Admitted', color='g', alpha=0.7)
+        axes[0, 2].bar(x_pos + width/2, rejected_by_area, width,
+                       label='Rejected', color='r', alpha=0.7)
+        axes[0, 2].set_xlabel('Area ID')
+        axes[0, 2].set_ylabel('Number of Flows')
+        axes[0, 2].set_title('Flows per Area')
+        axes[0, 2].set_xticks(x_pos)
+        axes[0, 2].set_xticklabels([f'Area {aid}' for aid in area_ids])
+        axes[0, 2].legend()
+        axes[0, 2].grid(True, alpha=0.3, axis='y')
+
+        # Plot 6: Utility per Area (Bar Chart)
+        utility_by_area = [self.area_stats[aid]['utility'] for aid in area_ids]
+        axes[1, 2].bar(area_ids, utility_by_area, color='b', alpha=0.7)
+        axes[1, 2].set_xlabel('Area ID')
+        axes[1, 2].set_ylabel('Total Utility')
+        axes[1, 2].set_title('Utility Gained per Area')
+        axes[1, 2].set_xticks(area_ids)
+        axes[1, 2].set_xticklabels([f'Area {aid}' for aid in area_ids])
+        axes[1, 2].grid(True, alpha=0.3, axis='y')
+
         plt.tight_layout()
         plt.savefig('admission_control_results.png',
                     dpi=300, bbox_inches='tight')
@@ -375,15 +451,16 @@ if __name__ == "__main__":
     np.random.seed(42)
 
     print("=" * 70)
-    print("Multi-Server Admission Control Simulation")
+    print("Multi-Area Multi-Server Admission Control Simulation")
     print("=" * 70)
     print(f"\nConfiguration:")
+    print(f"  Areas: {NUM_AREAS} (independent traffic sources)")
     print(
         f"  Servers: {NUM_SERVERS}, Capacity: {SERVER_CAPACITY} flows/server")
     print(
-        f"  Arrival Rate: {FLOW_ARRIVAL_RATE}, Mean Duration: {MEAN_FLOW_DURATION}")
+        f"  Arrival Rate: {FLOW_ARRIVAL_RATE} per area, Mean Duration: {MEAN_FLOW_DURATION}")
     print(f"  Admission Threshold: {ADMISSION_THRESHOLD}")
-    print(f"  Simulation Time: {SIMULATION_TIME}\\n")
+    print(f"  Simulation Time: {SIMULATION_TIME}\n")
 
     sim = Simulation()
     sim.run()
