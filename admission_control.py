@@ -8,7 +8,7 @@ import numpy as np
 # --- Simulation Parameters ---
 
 # Number of areas in the system (each area has independent traffic)
-NUM_AREAS = 3
+NUM_AREAS = 2
 # Number of servers in the system
 NUM_SERVERS = 2
 # Maximum number of flows a server can handle
@@ -16,14 +16,31 @@ SERVER_CAPACITY = 10
 # Different classes of flows (e.g., video, IoT data, etc.)
 FLOW_CLASSES = ['video', 'iot', 'gaming', 'voice']
 # Average number of new flows arriving per time unit (for Poisson distribution)
-FLOW_ARRIVAL_RATE = 2.0
+FLOW_ARRIVAL_RATES = {
+    'video': 1.0,
+    'iot': 2.5,
+    'gaming': 0.8,
+    'voice': 1.2,
+}
 # Average duration of a flow (for Exponential distribution)
-MEAN_FLOW_DURATION = 15.0
+MEAN_FLOW_DURATIONS = {
+    'video': 30.0,
+    'iot': 5.0,
+    'gaming': 20.0,
+    'voice': 10.0,
+}
+# Average size of a flow (for Exponential distribution)
+MEAN_FLOW_SIZES = {
+    'video': 100.0,
+    'iot': 10.0,
+    'gaming': 50.0,
+    'voice': 20.0,
+}
 # Total simulation time
 SIMULATION_TIME = 100
 
 # Admission Control Parameters
-ADMISSION_THRESHOLD = 0.85  # Load threshold for selective admission
+ADMISSION_THRESHOLD = 1  # Load threshold for selective admission
 
 # --- Core Classes ---
 
@@ -31,37 +48,47 @@ ADMISSION_THRESHOLD = 0.85  # Load threshold for selective admission
 class Flow:
     """Represents an information flow to be processed."""
 
-    def __init__(self, flow_id, flow_class, creation_time, area_id, priority=None):
-        self.id = flow_id
-        self.flow_class = flow_class
-        self.creation_time = creation_time
-        self.area_id = area_id  # Which area generated this flow
+    def __init__(self, flow_id: str, flow_class: str, creation_time: float, area_id: int):
+        self.id: str = flow_id
+        self.flow_class: str = flow_class
+        self.creation_time: float = creation_time
+        self.area_id: int = area_id  # Which area generated this flow
         # Duration is drawn from an exponential distribution
-        self.duration = np.random.exponential(MEAN_FLOW_DURATION)
-        # Priority for admission decisions (higher is more important)
-        self.priority = priority if priority is not None else random.uniform(
-            1.0, 10.0)
+        self.duration = np.random.exponential(MEAN_FLOW_DURATIONS[flow_class])
+        # Size is drawn from an exponential distribution
+        self.size = np.random.exponential(MEAN_FLOW_SIZES[flow_class])
 
     def __repr__(self):
-        return f"Flow(id={self.id}, area={self.area_id}, class='{self.flow_class}', duration={self.duration:.2f}, priority={self.priority:.2f})"
+        return f"Flow(id={self.id}, area={self.area_id}, class='{self.flow_class}', duration={self.duration:.2f}, size={self.size:.2f})"
 
 
 class Application:
     """Represents an application running on a server that can process flows."""
 
-    def __init__(self, name, supported_flow_classes: list[str], utility_per_flow):
-        self.name = name
+    def __init__(self, name: str, supported_flow_classes: list[str]):
+        self.name: str = name
         self.supported_flow_classes: list[str] = supported_flow_classes
-        self.utility_per_flow = utility_per_flow
+        self.active_flows: dict[str, Flow] = {}  # flow_id -> flow_obj
 
-    def get_utility(self, flow: Flow):
-        """Calculates the utility of processing a given flow."""
-        if flow.flow_class in self.supported_flow_classes:
-            return self.utility_per_flow
-        return 0
+    def can_process(self, flow: Flow):
+        """Checks if this application can process a given flow."""
+        return flow.flow_class in self.supported_flow_classes
+
+    def add_flow(self, flow: Flow):
+        """Adds a flow to this application."""
+        self.active_flows[flow.id] = flow
+
+    def remove_flow(self, flow_id: str):
+        """Removes a flow from this application."""
+        if flow_id in self.active_flows:
+            del self.active_flows[flow_id]
+
+    def get_utility(self):
+        """Calculates the utility as the sum of all active flow sizes."""
+        return sum(flow.size for flow in self.active_flows.values())
 
     def __repr__(self):
-        return f"App(name='{self.name}', supports={self.supported_flow_classes})"
+        return f"App(name='{self.name}', supports={self.supported_flow_classes}, utility={self.get_utility():.2f})"
 
 
 class Server:
@@ -70,47 +97,57 @@ class Server:
     def __init__(self, server_id, capacity: int):
         self.id = server_id
         self.capacity = capacity
-        self.active_flows = {}  # flow_id -> (flow_obj, end_time)
-        self.applications = []
+        # flow_id -> (end_time, app)
+        self.flow_end_times: dict[str, tuple[float, Application]] = {}
+        self.applications: list[Application] = []
 
     def current_load(self):
-        """Returns the number of active flows."""
-        return len(self.active_flows)
+        """Returns the number of active flows across all applications."""
+        return sum(len(app.active_flows) for app in self.applications)
 
     def get_active_flow_objects(self):
-        """Returns list of active flow objects."""
-        return [flow for flow, _ in self.active_flows.values()]
+        """Returns list of active flow objects from all applications."""
+        flows = []
+        for app in self.applications:
+            flows.extend(app.active_flows.values())
+        return flows
 
     def add_application(self, app):
         """Adds an application to the server."""
         self.applications.append(app)
 
-    def get_utility_for_flow(self, flow):
-        """Finds the best utility this server's applications can offer for a flow."""
-        if not self.applications:
-            return 0
-        return max(app.get_utility(flow) for app in self.applications)
+    def find_app_for_flow(self, flow: Flow):
+        """Finds an application that can process this flow."""
+        for app in self.applications:
+            if app.can_process(flow):
+                return app
+        return None
 
     def get_total_utility(self):
-        """Calculate total utility from all active flows."""
-        total = 0
-        for flow, _ in self.active_flows.values():
-            total += self.get_utility_for_flow(flow)
-        return total
+        """Calculate total utility from all applications."""
+        return sum(app.get_utility() for app in self.applications)
 
-    def add_flow(self, flow, current_time):
+    def add_flow(self, flow: Flow, current_time: float):
         """Adds a flow to the server's active processes."""
-        end_time = current_time + flow.duration
-        self.active_flows[flow.id] = (flow, end_time)
+        app = self.find_app_for_flow(flow)
+        if app is None:
+            return False
 
-    def update_active_flows(self, current_time):
+        end_time = current_time + flow.duration
+        self.flow_end_times[flow.id] = (end_time, app)
+        app.add_flow(flow)
+        return True
+
+    def update_active_flows(self, current_time: float):
         """Removes flows that have completed."""
         completed_flows = [
-            flow_id for flow_id, (_, end_time) in self.active_flows.items()
+            flow_id for flow_id, (end_time, _) in self.flow_end_times.items()
             if current_time >= end_time
         ]
         for flow_id in completed_flows:
-            del self.active_flows[flow_id]
+            _, app = self.flow_end_times[flow_id]
+            app.remove_flow(flow_id)
+            del self.flow_end_times[flow_id]
         return len(completed_flows)
 
     def __repr__(self):
@@ -118,7 +155,7 @@ class Server:
 
 
 class UtilityBasedAdmissionController:
-    """Utility and priority-based admission control for multi-server systems."""
+    """Utility-based admission control for multi-server systems."""
 
     def __init__(self, admission_threshold=ADMISSION_THRESHOLD):
         """
@@ -131,63 +168,53 @@ class UtilityBasedAdmissionController:
         """
         Decides whether to admit a flow based on:
         1. Server capacity constraints
-        2. Flow priority
-        3. Expected utility gain
-        4. Current server load
+        2. Availability of an application that can process the flow
+        3. Current server load
         """
         # Check basic capacity
         if server.current_load() >= server.capacity:
             return False
 
-        # Calculate expected utility if admitted
-        utility = server.get_utility_for_flow(flow)
-
-        # Always reject flows with no utility
-        if utility <= 0:
+        # Check if any application can process this flow
+        app = server.find_app_for_flow(flow)
+        if app is None:
             return False
 
-        # Priority-based admission: prefer high-priority flows when near capacity
-        load_ratio = server.current_load() / server.capacity
-
-        if load_ratio > self.admission_threshold:
-            # Near capacity: be selective based on priority
-            # Only admit high-priority flows (priority > 5.0)
-            return flow.priority >= 5.0
-        else:
-            # Below threshold: admit flows with positive utility
-            return True
+        # Admit flows if there's capacity and an app can handle it
+        return True
 
 
 class AreaTrafficGenerator:
     """Generates incoming flows for an area."""
 
-    def __init__(self, area_id):
-        self.area_id = area_id
+    def __init__(self, area_id: int):
+        self.area_id: int = area_id
         self.flow_counter = 0
 
     def generate_events(self, total_time):
         """Generates a timeline of flow arrival events for this area."""
         events = []
-        current_time = 0
-        while current_time < total_time:
-            # Time to next arrival from Poisson process
-            time_to_next = np.random.exponential(1.0 / FLOW_ARRIVAL_RATE)
-            current_time += time_to_next
-            if current_time < total_time:
-                self.flow_counter += 1
-                flow_class = random.choice(FLOW_CLASSES)
-                # Create flow with global ID: area_id.flow_counter
-                flow_id = f"{self.area_id}.{self.flow_counter}"
-                flow = Flow(flow_id, flow_class, current_time, self.area_id)
-                events.append((current_time, 'arrival', flow))
+        for flow_class, arrival_rate in FLOW_ARRIVAL_RATES.items():
+            current_time = 0
+            while current_time < total_time:
+                # Time to next arrival from Poisson process
+                time_to_next = np.random.exponential(1.0 / arrival_rate)
+                current_time += time_to_next
+                if current_time < total_time:
+                    self.flow_counter += 1
+                    # Create flow with global ID: area_id.flow_counter
+                    flow_id = f"{self.area_id}.{self.flow_counter}"
+                    flow = Flow(flow_id, flow_class,
+                                current_time, self.area_id)
+                    events.append((current_time, 'arrival', flow))
         return events
 
 
 class RandomizedLoadBalancer:
     """Sends flows to servers randomly."""
 
-    def __init__(self, servers):
-        self.servers = servers
+    def __init__(self, servers: list[Server]):
+        self.servers: list[Server] = servers
 
     def select_server(self) -> Server:
         """Selects a server at random."""
@@ -206,9 +233,9 @@ class Simulation:
         applications = []
 
         # 2. Create and distribute applications (example setup)
-        app1 = Application("VideoAnalytics", ['video', 'gaming'], 10)
-        app2 = Application("IoTSensor", ['iot'], 5)
-        app3 = Application("GeneralPurpose", FLOW_CLASSES, 2)
+        app1 = Application("VideoAnalytics", ['video', 'gaming'])
+        app2 = Application("IoTSensor", ['iot'])
+        app3 = Application("GeneralPurpose", FLOW_CLASSES)
 
         applications.append(app1)
         applications.append(app2)
@@ -283,27 +310,33 @@ class Simulation:
 
                 # 2. Admission Control makes a decision
                 if self.admission_controller.admit(flow, target_server):
-                    # 3. If admitted, add flow to server and update utility
-                    utility = target_server.get_utility_for_flow(flow)
-                    target_server.add_flow(flow, event_time)
+                    # 3. If admitted, add flow to server
+                    if target_server.add_flow(flow, event_time):
+                        self.total_admitted += 1
+                        # Utility is now calculated from all applications
+                        current_utility = target_server.get_total_utility()
 
-                    self.total_admitted += 1
-                    self.total_utility += utility
+                        # Update per-area statistics
+                        self.area_stats[flow.area_id]['admitted'] += 1
 
-                    # Update per-area statistics
-                    self.area_stats[flow.area_id]['admitted'] += 1
-                    self.area_stats[flow.area_id]['utility'] += utility
-
-                    print(
-                        f"  -> ADMITTED. Utility: {utility:.2f}, Priority: {flow.priority:.2f}, "
-                        f"Load: {target_server.current_load()}")
+                        print(
+                            f"  -> ADMITTED. Flow size: {flow.size:.2f}, "
+                            f"Server utility: {current_utility:.2f}, "
+                            f"Load: {target_server.current_load()}")
+                    else:
+                        # Failed to add flow (no app available)
+                        self.total_rejected += 1
+                        self.area_stats[flow.area_id]['rejected'] += 1
+                        print(f"  -> REJECTED. No application available.")
                 else:
                     # 4. If rejected, log it
                     self.total_rejected += 1
                     self.area_stats[flow.area_id]['rejected'] += 1
 
+                    app = target_server.find_app_for_flow(flow)
+                    app_available = "Yes" if app else "No"
                     print(
-                        f"  -> REJECTED. Priority: {flow.priority:.2f}, Utility would be: {target_server.get_utility_for_flow(flow)}")
+                        f"  -> REJECTED. Flow size: {flow.size:.2f}, App available: {app_available}")
 
                 # 5. Record metrics
                 self._record_metrics(event_time)
@@ -312,13 +345,18 @@ class Simulation:
         for server in self.servers:
             server.update_active_flows(SIMULATION_TIME)
 
+        # Calculate final total utility from all servers
+        self.total_utility = sum(server.get_total_utility()
+                                 for server in self.servers)
+
         print("\n--- Simulation Finished ---")
         total_flows = self.total_admitted + self.total_rejected
         print(f"\nOverall Statistics:")
         print(f"  Total flows generated: {total_flows}")
         print(f"  Admitted: {self.total_admitted}")
         print(f"  Rejected: {self.total_rejected}")
-        print(f"  Total Utility: {self.total_utility:.2f}")
+        print(
+            f"  Total Utility (sum of app utilities): {self.total_utility:.2f}")
 
         if total_flows > 0:
             rejection_rate = (self.total_rejected / total_flows) * 100
@@ -338,14 +376,16 @@ class Simulation:
             print(
                 f"    Flows: {area_total} (Admitted: {stats['admitted']}, Rejected: {stats['rejected']})")
             print(f"    Rejection Rate: {area_rejection_rate:.2f}%")
-            print(f"    Utility: {stats['utility']:.2f}")
 
     def _record_metrics(self, current_time):
         """Record simulation metrics for plotting."""
         self.time_series.append(current_time)
         self.admitted_series.append(self.total_admitted)
         self.rejected_series.append(self.total_rejected)
-        self.utility_series.append(self.total_utility)
+        # Calculate current total utility from all servers
+        current_utility = sum(server.get_total_utility()
+                              for server in self.servers)
+        self.utility_series.append(current_utility)
 
         # Record server loads
         for server in self.servers:
@@ -428,14 +468,15 @@ class Simulation:
         axes[0, 2].legend()
         axes[0, 2].grid(True, alpha=0.3, axis='y')
 
-        # Plot 6: Utility per Area (Bar Chart)
-        utility_by_area = [self.area_stats[aid]['utility'] for aid in area_ids]
-        axes[1, 2].bar(area_ids, utility_by_area, color='b', alpha=0.7)
-        axes[1, 2].set_xlabel('Area ID')
+        # Plot 6: Utility per Server (Bar Chart)
+        server_ids = [s.id for s in self.servers]
+        utility_by_server = [s.get_total_utility() for s in self.servers]
+        axes[1, 2].bar(server_ids, utility_by_server, color='b', alpha=0.7)
+        axes[1, 2].set_xlabel('Server ID')
         axes[1, 2].set_ylabel('Total Utility')
-        axes[1, 2].set_title('Utility Gained per Area')
-        axes[1, 2].set_xticks(area_ids)
-        axes[1, 2].set_xticklabels([f'Area {aid}' for aid in area_ids])
+        axes[1, 2].set_title('Utility per Server (Sum of App Utilities)')
+        axes[1, 2].set_xticks(server_ids)
+        axes[1, 2].set_xticklabels([f'S{sid}' for sid in server_ids])
         axes[1, 2].grid(True, alpha=0.3, axis='y')
 
         plt.tight_layout()
@@ -458,7 +499,7 @@ if __name__ == "__main__":
     print(
         f"  Servers: {NUM_SERVERS}, Capacity: {SERVER_CAPACITY} flows/server")
     print(
-        f"  Arrival Rate: {FLOW_ARRIVAL_RATE} per area, Mean Duration: {MEAN_FLOW_DURATION}")
+        f"  Arrival Rates: {FLOW_ARRIVAL_RATES}, Mean Durations: {MEAN_FLOW_DURATIONS}")
     print(f"  Admission Threshold: {ADMISSION_THRESHOLD}")
     print(f"  Simulation Time: {SIMULATION_TIME}\n")
 
